@@ -1,0 +1,126 @@
+<!doctype html>
+<html>
+<head>
+  <title>Screen and audio recorder — alvaro-cuesta/tools</title>
+</head>
+<body>
+  <button id="start">Start capture</button>
+  <button id="stop" disabled>Stop & prepare download</button>
+  <a id="download" style="display:none">Download</a>
+  <script>
+  (function(){
+    const startBtn = document.getElementById('start');
+    const stopBtn = document.getElementById('stop');
+    const dl = document.getElementById('download');
+
+    let mediaRecorder;
+    let recordedChunks = [];
+    let activeStreams = []; // to stop tracks later
+    let mixedStream;
+
+    async function startAll() {
+      // 1) prompt for microphone
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      activeStreams.push(micStream);
+
+      // 2) prompt for screen capture (may also include system audio)
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      activeStreams.push(screenStream);
+
+      // 3) mix audio (if screen has audio and mic exists)
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const destination = audioContext.createMediaStreamDestination();
+
+      // helper to connect an audio track (if present) to the destination
+      function connectIfAudio(stream) {
+        if (!stream) return;
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) return;
+        const src = audioContext.createMediaStreamSource(new MediaStream(audioTracks));
+        src.connect(destination);
+      }
+
+      connectIfAudio(screenStream); // system/tab audio if provided
+      connectIfAudio(micStream);    // microphone
+
+      // If no audio at all, destination.stream will be empty. Handle by using mic or screen audio if present.
+      let audioTrack;
+      if (destination.stream.getAudioTracks().length > 0) {
+        audioTrack = destination.stream.getAudioTracks()[0];
+      } else {
+        // fallback: prefer mic, then screen
+        if (micStream.getAudioTracks().length) audioTrack = micStream.getAudioTracks()[0];
+        else if (screenStream.getAudioTracks().length) audioTrack = screenStream.getAudioTracks()[0];
+      }
+
+      // Build output stream: video track from screen + mixed audio track (if any)
+      mixedStream = new MediaStream();
+      // add all video tracks from screen (usually one)
+      screenStream.getVideoTracks().forEach(t => mixedStream.addTrack(t));
+      if (audioTrack) mixedStream.addTrack(audioTrack);
+
+      // prepare MediaRecorder
+      recordedChunks = [];
+      let mime = 'video/webm;codecs=vp9,opus';
+      if (!MediaRecorder.isTypeSupported(mime)) {
+        mime = 'video/webm;codecs=vp8,opus';
+        if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm';
+      }
+      mediaRecorder = new MediaRecorder(mixedStream, { mimeType: mime });
+      mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = onStop;
+
+      // start recording
+      mediaRecorder.start(250); // emit blobs every 250ms
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+    }
+
+    function stopAll() {
+      // stop recorder
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+
+      // stop all original tracks (mic + screen)
+      activeStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
+      activeStreams = [];
+
+      // stop any tracks still in mixedStream (video)
+      if (mixedStream) mixedStream.getTracks().forEach(t => t.stop());
+    }
+
+    function onStop() {
+      // create blob and make download link
+      const blob = new Blob(recordedChunks, { type: recordedChunks[0]?.type || 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      dl.href = url;
+      dl.download = `capture-${new Date().toISOString().replace(/[:.]/g,'-')}.webm`;
+      dl.style.display = 'inline-block';
+      dl.textContent = 'Download capture';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      // free memory after a while
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+
+    startBtn.addEventListener('click', async () => {
+      // minimal error bubbling
+      try { await startAll(); } catch (err) {
+        // user denied or browser incompatibility
+        console.error('capture failed', err);
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      stopAll();
+    });
+
+    // optional: clean up if user navigates away
+    window.addEventListener('unload', () => {
+      activeStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
+    });
+  })();
+  </script>
+</body>
+</html>
