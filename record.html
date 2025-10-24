@@ -10,7 +10,7 @@
   <button id="stop" disabled>Stop & prepare download</button>
   <a id="download" style="display:none;margin-left:8px">Download</a>
   <div style="margin-top:12px">
-    <video id="preview" controls playsinline style="width:100%;max-height:60vh"></video>
+    <video id="preview" controls playsinline></video>
   </div>
 
   <script>
@@ -22,7 +22,7 @@
 
     let mediaRecorder;
     let recordedChunks = [];
-    let activeStreams = []; // to stop tracks later
+    let activeStreams = [];
     let mixedStream;
     let previewObjectUrl;
 
@@ -64,7 +64,12 @@
       screenStream.getVideoTracks().forEach(t => mixedStream.addTrack(t));
       if (audioTrack) mixedStream.addTrack(audioTrack);
 
-      // show live preview during capture using the mixedStream
+      // set preview size to match video
+      const videoTrack = screenStream.getVideoTracks()[0];
+      const settings = videoTrack.getSettings();
+      preview.width = settings.width || 640;
+      preview.height = settings.height || 360;
+
       preview.srcObject = mixedStream;
       preview.style.display = 'block';
       preview.muted = true; // mute to avoid echo
