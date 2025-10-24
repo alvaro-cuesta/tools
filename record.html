@@ -1,37 +1,44 @@
 <!doctype html>
 <html>
 <head>
-  <title>Screen and audio recorder — alvaro-cuesta/tools</title>
+  <meta charset="utf-8" />
+  <title>Screen and audio recorder — preview</title>
+  <style>body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:18px}button{margin-right:8px}video{display:none;border:1px solid #ddd;border-radius:6px}</style>
 </head>
 <body>
   <button id="start">Start capture</button>
   <button id="stop" disabled>Stop & prepare download</button>
-  <a id="download" style="display:none">Download</a>
+  <a id="download" style="display:none;margin-left:8px">Download</a>
+  <div style="margin-top:12px">
+    <video id="preview" controls playsinline style="width:100%;max-height:60vh"></video>
+  </div>
+
   <script>
   (function(){
     const startBtn = document.getElementById('start');
     const stopBtn = document.getElementById('stop');
     const dl = document.getElementById('download');
+    const preview = document.getElementById('preview');
 
     let mediaRecorder;
     let recordedChunks = [];
     let activeStreams = []; // to stop tracks later
     let mixedStream;
+    let previewObjectUrl;
 
     async function startAll() {
-      // 1) prompt for microphone
+      // prompt for microphone
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       activeStreams.push(micStream);
 
-      // 2) prompt for screen capture (may also include system audio)
+      // prompt for screen capture (may also include system audio)
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       activeStreams.push(screenStream);
 
-      // 3) mix audio (if screen has audio and mic exists)
+      // mix audio (if screen has audio and mic exists)
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const destination = audioContext.createMediaStreamDestination();
 
-      // helper to connect an audio track (if present) to the destination
       function connectIfAudio(stream) {
         if (!stream) return;
         const audioTracks = stream.getAudioTracks();
@@ -40,24 +47,28 @@
         src.connect(destination);
       }
 
-      connectIfAudio(screenStream); // system/tab audio if provided
-      connectIfAudio(micStream);    // microphone
+      connectIfAudio(screenStream);
+      connectIfAudio(micStream);
 
-      // If no audio at all, destination.stream will be empty. Handle by using mic or screen audio if present.
+      // choose an audio track: mixed if present, otherwise prefer mic then screen
       let audioTrack;
       if (destination.stream.getAudioTracks().length > 0) {
         audioTrack = destination.stream.getAudioTracks()[0];
       } else {
-        // fallback: prefer mic, then screen
         if (micStream.getAudioTracks().length) audioTrack = micStream.getAudioTracks()[0];
         else if (screenStream.getAudioTracks().length) audioTrack = screenStream.getAudioTracks()[0];
       }
 
-      // Build output stream: video track from screen + mixed audio track (if any)
+      // build output stream: video track from screen + mixed audio track (if any)
       mixedStream = new MediaStream();
-      // add all video tracks from screen (usually one)
       screenStream.getVideoTracks().forEach(t => mixedStream.addTrack(t));
       if (audioTrack) mixedStream.addTrack(audioTrack);
+
+      // show live preview during capture using the mixedStream
+      preview.srcObject = mixedStream;
+      preview.style.display = 'block';
+      preview.muted = true; // mute to avoid echo
+      try { await preview.play(); } catch (_) {}
 
       // prepare MediaRecorder
       recordedChunks = [];
@@ -70,55 +81,81 @@
       mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
       mediaRecorder.onstop = onStop;
 
-      // start recording
-      mediaRecorder.start(250); // emit blobs every 250ms
+      mediaRecorder.start(250);
       startBtn.disabled = true;
       stopBtn.disabled = false;
     }
 
     function stopAll() {
-      // stop recorder
       if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
 
-      // stop all original tracks (mic + screen)
+      // stop original streams (mic + screen)
       activeStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
       activeStreams = [];
 
       // stop any tracks still in mixedStream (video)
       if (mixedStream) mixedStream.getTracks().forEach(t => t.stop());
+      // remove live preview srcObject
+      preview.srcObject = null;
+      preview.muted = false;
     }
 
     function onStop() {
-      // create blob and make download link
       const blob = new Blob(recordedChunks, { type: recordedChunks[0]?.type || 'video/webm' });
       const url = URL.createObjectURL(blob);
+
+      // show recorded blob in the preview element
+      preview.srcObject = null;
+      preview.pause();
+      preview.removeAttribute('playsinline');
+      preview.src = url;
+      preview.controls = true;
+      preview.muted = false;
+      preview.style.display = 'block';
+      preview.play().catch(() => {});
+
+      // prepare download link
       dl.href = url;
       dl.download = `capture-${new Date().toISOString().replace(/[:.]/g,'-')}.webm`;
       dl.style.display = 'inline-block';
       dl.textContent = 'Download capture';
+
+      // enable start button again
       startBtn.disabled = false;
       stopBtn.disabled = true;
-      // free memory after a while
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+      // revoke previous previewObjectUrl if any
+      if (previewObjectUrl) {
+        URL.revokeObjectURL(previewObjectUrl);
+        previewObjectUrl = null;
+      }
+      previewObjectUrl = url;
+
+      // revoke object URL after some time to free memory but allow user to download/play
+      setTimeout(() => {
+        if (previewObjectUrl) {
+          try { URL.revokeObjectURL(previewObjectUrl); } catch (e) {}
+          previewObjectUrl = null;
+        }
+      }, 5 * 60 * 1000); // 5 minutes
     }
 
     startBtn.addEventListener('click', async () => {
-      // minimal error bubbling
-      try { await startAll(); } catch (err) {
-        // user denied or browser incompatibility
+      try {
+        await startAll();
+      } catch (err) {
         console.error('capture failed', err);
         startBtn.disabled = false;
         stopBtn.disabled = true;
       }
     });
 
-    stopBtn.addEventListener('click', () => {
-      stopAll();
-    });
+    stopBtn.addEventListener('click', () => stopAll());
 
-    // optional: clean up if user navigates away
     window.addEventListener('unload', () => {
       activeStreams.forEach(s => s.getTracks().forEach(t => t.stop()));
+      if (mixedStream) mixedStream.getTracks().forEach(t => t.stop());
+      if (previewObjectUrl) try { URL.revokeObjectURL(previewObjectUrl); } catch(e){}
     });
   })();
   </script>
