@@ -89,6 +89,9 @@
       mediaRecorder.start(250);
       startBtn.disabled = true;
       stopBtn.disabled = false;
+
+      // Listen for user stopping via browser UI
+      screenStream.getVideoTracks()[0].onended = stopAll;
     }
 
     function stopAll() {
